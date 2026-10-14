@@ -7,13 +7,21 @@ var REPORTS = (function () {
   function isAdmin() { return A.role('admin'); }
   function canClose() { return isAdmin() || A.role('hr'); }
 
+  /* ทุกเดือนตั้งแต่วันเริ่มเก็บข้อมูลถึงเดือนปัจจุบัน — เดือนที่ยังไม่มีข้อมูลก็แสดง เพื่อกดดึงได้ */
   function ymList() {
-    var list = (A.state.boot.months || []).map(function (m) { return m.ym; });
-    var last = (A.state.boot.lastDataDate || A.today()).slice(0, 7);
-    if (list.indexOf(last) < 0) list.unshift(last);
+    var have = {};
+    (A.state.boot.months || []).forEach(function (m) { have[m.ym] = m.status || 'open'; });
     var th = A.today().slice(0, 7);
-    if (list.indexOf(th) < 0) list.unshift(th);
-    return list.sort().reverse();
+    var from = String(A.state.boot.dataFrom || '2025-10-01').slice(0, 7);
+    var list = [], y = from, guard = 0;
+    while (y <= th && guard++ < 120) { list.push(y); y = A.addMonths(y, 1); }
+    Object.keys(have).forEach(function (k) { if (list.indexOf(k) < 0) list.push(k); });
+    var last = (A.state.boot.lastDataDate || '').slice(0, 7);
+    if (last && list.indexOf(last) < 0) list.push(last);
+    return list.sort().reverse().map(function (k) { return { ym: k, has: !!have[k], closed: have[k] === 'closed' }; });
+  }
+  function ymLabel(x) {
+    return A.ymThai(x.ym) + (x.closed ? ' · ปิดรอบแล้ว' : x.has ? '' : ' · ยังไม่มีข้อมูล');
   }
 
   /* ================= รอบเบิกรายเดือน ================= */
@@ -24,13 +32,22 @@ var REPORTS = (function () {
     host.innerHTML =
       '<div class="panel tool no-print"><div class="panel-b">' +
       '<span class="note">รอบเดือน</span><select id="mYm" class="inp sm">' +
-      ymList().map(function (y) { return '<option value="' + y + '"' + (y === ym ? ' selected' : '') + '>' + A.ymThai(y) + '</option>'; }).join('') + '</select>' +
+      ymList().map(function (y) { return '<option value="' + y.ym + '"' + (y.ym === ym ? ' selected' : '') + '>' + esc(ymLabel(y)) + '</option>'; }).join('') + '</select>' +
+      (canClose() ? '<button class="btn sm ghost" id="mSync" title="ดึงข้อมูลจาก API โรงพยาบาลใหม่ทั้งเดือน">' + ic('sync') + 'ดึงข้อมูลเดือนนี้ใหม่</button>' : '') +
       '<span class="spacer"></span>' +
       '<button class="btn sm accent" id="mHr">' + ic('month') + 'รายงานส่งเบิก HR</button>' +
       '<button class="btn sm" id="mDrop">' + ic('cut') + 'รายงานรายการระงับ</button>' +
       '<button class="btn sm" id="mHrmi">' + ic('excel') + 'ไฟล์ HRMi</button>' +
       '</div></div><div id="mBody">' + A.skeleton(6) + '</div>';
     $('mYm').onchange = function () { cur.ym = this.value; month(host); };
+    if ($('mSync')) $('mSync').onclick = function () { syncThisMonth(this); };
+    function syncThisMonth(btn) {
+      return A.syncMonth(ym, btn).then(function (r) {
+        A.ok(r.rows ? 'ดึงข้อมูล ' + A.ymThai(ym) + ' แล้ว ' + n0(r.rows) + ' รายการ' + (r.changed ? ' (ยอดมีการเปลี่ยนแปลง)' : ' (ยอดเหมือนเดิม)')
+                    : 'API โรงพยาบาลไม่มีรายการ DF ทันตกรรมในเดือน ' + A.ymThai(ym), 'ดึงข้อมูลเสร็จแล้ว');
+        month(host, ym);
+      }, function () { });
+    }
 
     return A.cached('getMonth', { ym: ym }, function (d) {
       if (ym !== cur.ym) return;
@@ -46,6 +63,17 @@ var REPORTS = (function () {
       var closed = d.status === 'closed';
       var nDrop = d.dropped.length, nBp = (d.backpay || []).filter(function (b) { return b.status === 'รอดำเนินการ'; }).length;
       var h = '';
+
+      if (!d.byDoctor.length && !(d.clinicDays || []).length) {
+        $('mBody').innerHTML = '<div class="panel"><div class="panel-b">' +
+          A.empty('ยังไม่มีข้อมูลของ ' + A.ymThai(d.ym || ym) + ' ในระบบ',
+            canClose() ? 'ถ้าเดือนนี้มีคลินิก แปลว่าระบบยังดึงข้อมูลย้อนหลังมาไม่ถึง — กดปุ่มด้านล่างเพื่อดึงเดี๋ยวนี้ (ใช้เวลาประมาณ 1–3 นาที)' : 'ถ้าเดือนนี้มีคลินิก กรุณาแจ้งผู้ดูแลระบบให้ดึงข้อมูลเดือนนี้', 'cal') +
+          (canClose() ? '<div class="btns" style="justify-content:center"><button class="btn primary" id="mSync2">' + ic('sync') + 'ดึงข้อมูล ' + esc(A.ymThai(d.ym || ym)) + '</button>' +
+            (isAdmin() ? '<button class="btn" onclick="SMCDF.go(\'settings:data\')">' + ic('info') + 'ดูสถานะข้อมูลทุกเดือน</button>' : '') + '</div>' : '') +
+          '</div></div>';
+        if ($('mSync2')) $('mSync2').onclick = function () { syncThisMonth(this); };
+        return;
+      }
 
       /* แถบขั้นตอน */
       var steps = [
@@ -448,7 +476,7 @@ var REPORTS = (function () {
     if (arg) stab = arg;
     return A.api('getSettings', {}).then(function (d) {
       var pend = d.dfCodes.filter(function (x) { return x.status === 'pending'; }).length;
-      var tabs = [['rule', 'กติกาและการจ่าย'], ['codes', 'รหัส DF', pend], ['conn', 'การเชื่อมต่อ'], ['rights', 'สิทธิการรักษา'],
+      var tabs = [['rule', 'กติกาและการจ่าย'], ['codes', 'รหัส DF', pend], ['data', 'สถานะข้อมูล'], ['conn', 'การเชื่อมต่อ'], ['rights', 'สิทธิการรักษา'],
         ['price', 'เพดานราคา DF'], ['users', 'ผู้ใช้'], ['doc', 'เอกสารและผู้ลงนาม'], ['log', 'ประวัติ']];
       host.innerHTML = '<div class="panel"><div class="tabs">' + tabs.map(function (t) {
         return '<button data-tab="' + t[0] + '" class="' + (t[0] === stab ? 'on' : '') + '">' + esc(t[1]) + (t[2] ? '<span class="cnt">' + t[2] + '</span>' : '') + '</button>';
@@ -482,6 +510,60 @@ var REPORTS = (function () {
       });
     }
 
+    /* ---------- สถานะข้อมูล: ดึงครบหรือยัง ---------- */
+    function dataStatus() {
+      var box = $('dsBox'); if (!box) return;
+      A.api('getDataStatus', {}, { silent: true }).then(function (r) {
+        if (!$('dsBox')) return;
+        var miss = r.months.filter(function (m) { return m.state !== 'ok'; });
+        var bf = r.backfill, head;
+        if (!miss.length) head = '<div class="msg ok">' + ic('ok') + '<span><b>ข้อมูลครบทุกเดือน</b> ตั้งแต่ ' + esc(A.dThai(r.from)) + ' ถึงวันนี้ — ระบบเคยดึงจาก API โรงพยาบาลครบทุกวันแล้ว</span></div>';
+        else head = '<div class="msg warn">' + ic('warn') + '<span><b>ยังดึงไม่ครบ ' + miss.length + ' เดือน</b>: ' + miss.map(function (m) { return esc(A.ymThai(m.ym)); }).join(', ') +
+          (bf.running ? '<br>ระบบกำลังทยอยดึงเบื้องหลังอยู่ (ถึงวันที่ ' + esc(A.dThai(bf.at)) + ') — หรือกด "ดึงเดือนที่ขาดทั้งหมด" เพื่อดึงเดี๋ยวนี้' : '<br>กด "ดึงเดือนที่ขาดทั้งหมด" เพื่อดึงเดี๋ยวนี้ (ต้องเปิดหน้านี้ค้างไว้จนเสร็จ ประมาณเดือนละ 1–3 นาที)') + '</span></div>';
+        var bfLine = '<p class="note">การดึงย้อนหลังเบื้องหลัง: ' +
+          (bf.done ? 'เสร็จแล้วเมื่อ ' + esc(A.dtThai(bf.done)) : bf.running ? 'กำลังทำงาน · ถึงวันที่ ' + esc(A.dThai(bf.at)) : bf.at ? 'หยุดอยู่ที่วันที่ ' + esc(A.dThai(bf.at)) + ' (ยังไม่จบ)' : 'ยังไม่เคยเริ่ม') +
+          ' · "ดึงแล้ว" นับจากบันทึกการดึงที่สำเร็จ · เดือนที่ดึงครบแต่ไม่มีวันคลินิก = API ไม่มีรายการ DF ทันตกรรมในเดือนนั้น</p>';
+        var tb = '<div class="wrap-x"><table class="rt"><thead><tr><th>เดือน</th><th>ดึงจาก API แล้ว</th><th class="n">วันที่มีคลินิก</th><th class="n">เคส</th><th class="n">ยอดรับรอง</th><th>รอบเบิก</th><th class="no-print"></th></tr></thead><tbody>' +
+          r.months.slice().reverse().map(function (m) {
+            var pc = m.allDays ? Math.round(m.coverDays * 100 / m.allDays) : 0;
+            var badge = m.state === 'ok' ? '<span class="badge ok">ครบ</span>' : m.state === 'part' ? '<span class="badge warn">' + m.coverDays + '/' + m.allDays + ' วัน</span>' : '<span class="badge bad">ยังไม่ได้ดึง</span>';
+            return '<tr><td><b>' + esc(A.ymThai(m.ym)) + '</b></td>' +
+              '<td>' + badge + '<div class="bar" style="margin-top:4px"><i style="width:' + pc + '%"></i></div></td>' +
+              '<td class="n">' + n0(m.clinicDays) + '</td><td class="n">' + n0(m.cases) + '</td><td class="n">' + n2(m.keep) + '</td>' +
+              '<td>' + (m.status === 'closed' ? '<span class="badge">ปิดแล้ว</span>' : m.clinicDays ? '<span class="badge info">เปิดอยู่</span>' : '-') + '</td>' +
+              '<td class="no-print"><button class="btn sm" data-sm="' + m.ym + '">' + ic('sync') + 'ดึงใหม่</button></td></tr>';
+          }).join('') + '</tbody></table></div>';
+        var fails = r.fails.length ? '<details style="margin-top:12px"><summary class="note">ดึงไม่สำเร็จล่าสุด ' + r.fails.length + ' ครั้ง</summary><ul class="note">' +
+          r.fails.map(function (f) { return '<li>' + esc(A.dtThai(f.at)) + ' · ' + esc(f.range) + ' · ' + esc(String(f.detail || '').slice(0, 200)) + '</li>'; }).join('') + '</ul></details>' : '';
+        $('dsBox').innerHTML = head + bfLine +
+          '<div class="btns" style="margin-bottom:12px">' +
+          (miss.length ? '<button class="btn primary" id="dsAll">' + ic('download') + 'ดึงเดือนที่ขาดทั้งหมด (' + miss.length + ')</button>' : '') +
+          '<button class="btn" id="dsRe">' + ic('refresh') + 'ตรวจสถานะอีกครั้ง</button>' +
+          '<button class="btn ghost" id="dsRb" title="ใช้เมื่อหน้าเบิกรายเดือนแสดงเดือนไม่ครบ ทั้งที่ดูรายวันได้">' + ic('sync') + 'สร้างสรุปรายเดือนใหม่</button></div>' +
+          tb + fails;
+        A.cardify($('dsBox'));
+        $('dsRe').onclick = function () { $('dsBox').innerHTML = A.loading('กำลังตรวจ…'); dataStatus(); };
+        $('dsRb').onclick = function () {
+          A.run(this, function () { return A.api('rebuildSummaries', {}); }, { busy: 'กำลังสร้างสรุปใหม่…', ok: function (x) { return 'สร้างสรุปใหม่แล้ว ' + n0(x.days) + ' วัน'; } })
+            .then(function () { return A.reloadBoot(); }).then(dataStatus, function () { });
+        };
+        $('dsBox').querySelectorAll('[data-sm]').forEach(function (bt) {
+          bt.onclick = function () {
+            var ym = bt.getAttribute('data-sm');
+            A.syncMonth(ym, bt).then(function (x) { A.ok('ดึง ' + A.ymThai(ym) + ' แล้ว ' + n0(x.rows) + ' รายการ', 'ดึงข้อมูลเสร็จแล้ว'); dataStatus(); }, function () { });
+          };
+        });
+        if ($('dsAll')) $('dsAll').onclick = function () {
+          var btn = this, list = miss.map(function (m) { return m.ym; }), i = 0, total = 0;
+          (function next() {
+            if (i >= list.length) { A.ok('ดึงครบ ' + list.length + ' เดือนแล้ว รวม ' + n0(total) + ' รายการ', 'ดึงข้อมูลเสร็จแล้ว'); dataStatus(); return; }
+            var ym = list[i++];
+            A.syncMonth(ym, btn).then(function (x) { total += x.rows; next(); }, function () { dataStatus(); });
+          })();
+        };
+      }).catch(function (e) { if ($('dsBox')) $('dsBox').innerHTML = A.errBox(e); });
+    }
+
     function show(tab, d) {
       var s = d.settings, b = $('setBody'), h = '';
       if (tab === 'rule') {
@@ -502,6 +584,7 @@ var REPORTS = (function () {
           '</div>' + saveBtn(['ruleMode', 'ruleFrom', 'sharePct', 'incomeCodePay', 'incomeCodeHos', 'guaranteeOn', 'guaranteeAmt']);
       }
       if (tab === 'codes') h = codesHtml(d);
+      if (tab === 'data') h = '<div id="dsBox">' + A.loading('กำลังตรวจว่าข้อมูลแต่ละเดือนดึงครบหรือยัง…') + '</div>';
       if (tab === 'conn') {
         h = '<h4 style="margin:0 0 10px">' + ic('sync') + ' API ระบบสารสนเทศโรงพยาบาล</h4><div class="g3">' +
           fld('apiBase', 'ที่อยู่ API ของโรงพยาบาล', s.apiBase) +
@@ -583,6 +666,7 @@ var REPORTS = (function () {
       bindSave(b);
 
       if (tab === 'codes') bindCodes(b, d);
+      if (tab === 'data') dataStatus();
       if (tab === 'conn') {
         $('tApi').onclick = function () {
           var btn = this;

@@ -168,6 +168,7 @@ var PAGES = (function () {
       }).join('') + '</div></div></div></div>';
     /* เจ้าหน้าที่ (โหลดแยก) */
     html += '<div class="panel" id="staffPanel"><div class="panel-h"><h3>' + ic('staff') + 'เจ้าหน้าที่ปฏิบัติงาน</h3><span class="spacer"></span><span id="stTag"></span>' +
+      '<button class="btn sm ghost" id="stRe" title="ดึงตารางเวรล่าสุดจาก SMC Duty (เมื่อมีการแก้เวรหรือแก้ชื่อย้อนหลัง)">' + ic('refresh') + 'ดึงจาก SMC Duty ใหม่</button>' +
       (canEdit() ? '<button class="btn sm" id="stEdit">' + ic('edit') + 'แก้ไขรายชื่อ</button>' : '') +
       '</div><div class="panel-b flush" id="stBody">' + A.loading('กำลังดึงตารางเวรจาก SMC Duty…') + '</div></div>';
     html += '</div>';
@@ -184,6 +185,14 @@ var PAGES = (function () {
     A.cardify(host);
     bindCases(host);
     if ($('stEdit')) $('stEdit').onclick = editStaff;
+    if ($('stRe')) $('stRe').onclick = function () {
+      var b = this; A.busyBtn(b, true, 'กำลังดึง…');
+      loadStaff(cur.date, true, function (st) {
+        A.busyBtn(b, false);
+        if (st && st.manual && st.manual.length) A.toast('วันนี้ใช้รายชื่อที่คีย์เองอยู่ — ดูรายชื่อจาก SMC Duty ได้ในกรอบด้านล่าง', { type: 'warn' });
+        else if (st && st.ok) A.ok('อัปเดตรายชื่อจาก SMC Duty แล้ว (' + (st.list || []).length + ' คน)');
+      });
+    };
   }
 
   function pendingMsg(d) {
@@ -194,20 +203,29 @@ var PAGES = (function () {
   }
 
   /* ---------- เจ้าหน้าที่ ---------- */
-  function loadStaff(date, force) {
+  function loadStaff(date, force, done) {
     var body = $('stBody'); if (!body) return;
     A.api('getStaff', { date: date, force: !!force }, { silent: true }).then(function (st) {
+      if (done) done(st);
       if (date !== cur.date || !$('stBody')) return;
       cur.staff = st;
       drawStaff(st);
       var a4box = document.querySelector('.a4-scroll'); if (a4box && cur.data) a4box.innerHTML = a4(cur.data);
-    }).catch(function (e) { if ($('stBody')) $('stBody').innerHTML = '<div class="panel-b">' + A.errBox(e) + '</div>'; });
+    }).catch(function (e) { if (done) done(null); if ($('stBody')) $('stBody').innerHTML = '<div class="panel-b">' + A.errBox(e) + '</div>'; });
   }
   function staffList(st) { st = st || {}; return (st.manual && st.manual.length ? st.manual : (st.list || [])); }
   function drawStaff(st) {
     var list = staffList(st), body = $('stBody'), tag = $('stTag');
     tag.innerHTML = st.manual && st.manual.length ? '<span class="tag info">คีย์เอง</span>' : st.ok ? '<span class="tag ok">จาก SMC Duty</span>' : '<span class="tag">ยังไม่เชื่อมต่อ</span>';
     var warn = st.warn ? '<div class="panel-b" style="padding-bottom:0"><div class="msg warn" style="margin:0">' + ic('warn') + '<span>' + esc(st.warn) + '</span></div></div>' : '';
+    // ใช้รายชื่อที่คีย์เองอยู่ — ถ้า SMC Duty ต่างจากนี้ ให้เห็นและกลับไปใช้ตาม SMC Duty ได้
+    if (st.manual && st.manual.length && st.ok) {
+      var duty = st.list || [];
+      var same = duty.map(function (x) { return x.fullName; }).sort().join('|') === st.manual.map(function (x) { return x.fullName; }).sort().join('|');
+      warn += '<div class="panel-b" style="padding-bottom:0"><div class="msg info" style="margin:0">' + ic('info') + '<span>วันนี้ใช้ <b>รายชื่อที่คีย์เอง</b> (การแก้ใน SMC Duty จะไม่มีผลกับวันนี้)' +
+        (same ? '' : ' · SMC Duty ตอนนี้มี ' + duty.length + ' คน: ' + esc(duty.map(function (x) { return x.fullName; }).join(', ') || '-')) + '</span>' +
+        (canEdit() && !same ? '<button class="btn sm" id="stUseDuty">ใช้ตาม SMC Duty</button>' : '') + '</div></div>';
+    }
     if (!list.length) {
       body.innerHTML = warn + A.empty(st.ok ? 'ไม่มีเจ้าหน้าที่ทันตกรรมในตารางเวรวันนี้' : (st.reason || 'ยังไม่ได้เชื่อมต่อระบบตารางเวร'),
         canEdit() ? 'กด "แก้ไขรายชื่อ" เพื่อคีย์รายชื่อเอง' : '', 'staff');
@@ -218,6 +236,14 @@ var PAGES = (function () {
         return '<tr><td>' + esc(x.fullName || x.name || '-') + '</td><td>' + esc(x.positionName || '-') + '</td><td>' + esc(x.slot || '-') + '</td><td>' + esc(x.empCode || '-') + '</td></tr>';
       }).join('') + '</tbody></table></div>';
     A.cardify(body);
+    bindUseDuty();
+  }
+  function bindUseDuty() {
+    var b = $('stUseDuty'); if (!b) return;
+    b.onclick = function () {
+      A.run(b, function () { return A.api('saveStaff', { date: cur.date, list: [] }); }, { busy: 'กำลังบันทึก…', ok: 'กลับไปใช้ตารางเวรจาก SMC Duty แล้ว' })
+        .then(function () { loadStaff(cur.date, true); }, function () { });
+    };
   }
   function editStaff() {
     var man = (cur.staff && cur.staff.manual) || [];

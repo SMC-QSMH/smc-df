@@ -1,7 +1,7 @@
 /* app.js — แกนกลางของหน้าเว็บ: เรียกหลังบ้าน · แคชในเครื่อง · ล็อกอิน · เมนู · ป๊อปอัป · แจ้งเตือน · เครื่องมือช่วย
-   รุ่น 2569-10-13.2 */
+   รุ่น 2569-10-14.3 */
 var SMCDF = (function () {
-  var BUILD = '2569-10-13.2';
+  var BUILD = '2569-10-14.3';
   var MANUAL = (typeof MANUAL_URL !== 'undefined' && MANUAL_URL && MANUAL_URL.indexOf('PLACEHOLDER') < 0) ? MANUAL_URL : 'https://claude.ai/artifact/FrieHW2DQUStQMuPHonvNZ';
   var S = { token: null, me: null, cfg: null, boot: null, page: 'daily', arg: null, ver: '', alerts: [] };
   var $ = function (id) { return document.getElementById(id); };
@@ -593,6 +593,38 @@ var SMCDF = (function () {
     go(want || 'daily');
   }
 
+  /* โหลดข้อมูลตั้งต้นใหม่ (รายการเดือน / แจ้งเตือน) โดยไม่เปลี่ยนหน้า */
+  function reloadBoot() {
+    return api('bootstrap', {}, { silent: true }).then(function (b) {
+      S.boot = b; S.cfg = b.settings; S.alerts = b.alerts || [];
+      if (b.ver) { S.ver = b.ver; S.verAt = Date.now(); }
+      drawBell();
+      return b;
+    });
+  }
+  /* ดึงข้อมูลจาก API ใหม่ทั้งเดือน — หลังบ้านทำทีละ 10 วัน ถ้ายังไม่ครบจะเรียกต่อเอง */
+  function syncMonth(ym, btn) {
+    var rows = 0, changed = false, newCodes = [], round = 0;
+    busyBtn(btn, true, 'กำลังดึง ' + ymThai(ym) + '…');
+    function step(from) {
+      round++;
+      return api('syncMonth', { ym: ym, from: from || '' }).then(function (r) {
+        rows += r.rows; changed = changed || r.changed; newCodes = newCodes.concat(r.newCodes || []);
+        if (!r.done && round < 8) {
+          busyBtn(btn, false); busyBtn(btn, true, 'กำลังดึง ' + ymThai(ym) + ' (ต่อจาก ' + dThai(r.next) + ')…');
+          return step(r.next);
+        }
+        return r;
+      });
+    }
+    return step('').then(function () {
+      busyBtn(btn, false);
+      return reloadBoot().catch(function () { }).then(function () {
+        return { ym: ym, rows: rows, changed: changed, newCodes: newCodes };
+      });
+    }, function (e) { busyBtn(btn, false); err(e, 'ดึงข้อมูล ' + ymThai(ym) + ' ไม่สำเร็จ'); throw e; });
+  }
+
   function sessionExpired(m) {
     if (!S.token) return;
     try { localStorage.removeItem('smcdf.token'); } catch (e) { }
@@ -762,7 +794,7 @@ var SMCDF = (function () {
   }
 
   return {
-    start: start, api: api, cached: cached, prefetch: prefetch, go: go, state: S, esc: esc, n0: n0, n2: n2, nk: nk, pct: pct,
+    start: start, api: api, cached: cached, reloadBoot: reloadBoot, syncMonth: syncMonth, prefetch: prefetch, go: go, state: S, esc: esc, n0: n0, n2: n2, nk: nk, pct: pct,
     dThai: dThai, dtThai: dtThai, ymThai: ymThai, ymShort: ymShort, today: today, addDays: addDays, addMonths: addMonths, dow: dow,
     monthStart: monthStart, monthEnd: monthEnd, fyOf: fyOf, fyRange: fyRange, toast: toast, ok: ok, err: err,
     dialog: dialog, confirm: confirmBox, askPassword: askPassword, closeTop: closeTop, busyBtn: busyBtn, run: run,
